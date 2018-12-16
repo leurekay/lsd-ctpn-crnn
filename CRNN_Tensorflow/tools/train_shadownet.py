@@ -9,128 +9,101 @@
 Train shadow net script
 """
 import os
-from typing import Tuple
-
 import tensorflow as tf
 import os.path as ops
 import time
 import numpy as np
 import argparse
-from easydict import EasyDict
 
 from crnn_model import crnn_model
 from local_utils import data_utils, log_utils
-from local_utils.log_utils import compute_accuracy
-from local_utils.config_utils import load_config
+from global_configuration import config
+
 
 logger = log_utils.init_logger()
 
 
-def init_args() -> Tuple[argparse.Namespace, EasyDict]:
+def init_args():
     """
-    :return: parsed arguments and (updated) config.cfg object
+
+    :return:
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dataset_dir', type=str,
-                        help='Directory containing train_features.tfrecords')
-    parser.add_argument('-c', '--chardict_dir', type=str,
-                        help='Directory where character dictionaries for the dataset were stored')
-    parser.add_argument('-m', '--model_dir', type=str,
-                        help='Directory where to store model checkpoints')
-    parser.add_argument('-t', '--tboard_dir', type=str,
-                        help='Directory where to store TensorBoard logs')
-    parser.add_argument('-f', '--config_file', type=str,
-                        help='Use this global configuration file')
-    parser.add_argument('-e', '--decode_outputs', action='store_true', default=False,
-                        help='Activate decoding of predictions during training (slow!)')
-    parser.add_argument('-w', '--weights_path', type=str, help='Path to pre-trained weights to continue training')
-    parser.add_argument('-j', '--num_threads', type=int, default=int(os.cpu_count()/2),
-                        help='Number of threads to use in batch shuffling')
+    parser.add_argument('--dataset_dir', type=str, help='Where you store the dataset')
+    parser.add_argument('--weights_path', type=str, help='Where you store the pretrained weights')
 
-    args = parser.parse_args()
-
-    config = load_config(args.config_file)
-    if args.dataset_dir:
-        config.cfg.PATH.TFRECORDS_DIR = args.dataset_dir
-    if args.chardict_dir:
-        config.cfg.PATH.CHAR_DICT_DIR = args.chardict_dir
-    if args.model_dir:
-        config.cfg.PATH.MODEL_SAVE_DIR = args.model_dir
-    if args.tboard_dir:
-        config.cfg.PATH.TBOARD_SAVE_DIR = args.tboard_dir
-
-    return args, config.cfg
+    return parser.parse_args()
 
 
-def train_shadownet(cfg: EasyDict, weights_path: str=None, decode: bool=False, num_threads: int=4) -> np.array:
+def train_shadownet(dataset_dir, weights_path=None):
     """
-    :param cfg: configuration EasyDict (e.g. global_config.config.cfg)
-    :param weights_path: Path to stored weights
-    :param decode: Whether to perform CTC decoding to report progress during training
-    :param num_threads: Number of threads to use in tf.train.shuffle_batch
-    :return History of values of the cost function
+
+    :param dataset_dir:
+    :param weights_path:
+    :return:
     """
     # decode the tf records to get the training data
-    decoder = data_utils.TextFeatureIO(char_dict_path=ops.join(cfg.PATH.CHAR_DICT_DIR, 'char_dict.json'),
-                                       ord_map_dict_path=ops.join(cfg.PATH.CHAR_DICT_DIR, 'ord_map.json')).reader
+    decoder = data_utils.TextFeatureIO().reader
+    images, labels, imagenames = decoder.read_features(ops.join(dataset_dir, 'train_feature.tfrecords'),
+                                                       num_epochs=None)
+    inputdata, input_labels, input_imagenames = tf.train.shuffle_batch(
+        tensors=[images, labels, imagenames], batch_size=32, capacity=1000+2*32, min_after_dequeue=100, num_threads=1)
 
-    input_images, input_labels, input_image_names = decoder.read_features(cfg, cfg.TRAIN.BATCH_SIZE, num_threads)
+    inputdata = tf.cast(x=inputdata, dtype=tf.float32)
 
-    shadownet = crnn_model.ShadowNet(phase='Train',
-                                     hidden_nums=cfg.ARCH.HIDDEN_UNITS,
-                                     layers_nums=cfg.ARCH.HIDDEN_LAYERS,
-                                     num_classes=len(decoder.char_dict)+1)
+    # initializa the net model
+    shadownet = crnn_model.ShadowNet(phase='Train', hidden_nums=256, layers_nums=2, seq_length=25, num_classes=37)
 
     with tf.variable_scope('shadow', reuse=False):
-        net_out = shadownet.build_shadownet(inputdata=input_images)
+        net_out = shadownet.build_shadownet(inputdata=inputdata)
 
-    cost = tf.reduce_mean(tf.nn.ctc_loss(labels=input_labels, inputs=net_out,
-                                         sequence_length=cfg.ARCH.SEQ_LENGTH*np.ones(cfg.TRAIN.BATCH_SIZE)))
+    cost = tf.reduce_mean(tf.nn.ctc_loss(labels=input_labels, inputs=net_out, sequence_length=25*np.ones(32)))
 
-    decoded, log_prob = tf.nn.ctc_beam_search_decoder(net_out,
-                                                      cfg.ARCH.SEQ_LENGTH*np.ones(cfg.TRAIN.BATCH_SIZE),
-                                                      merge_repeated=False)
+    decoded, log_prob = tf.nn.ctc_beam_search_decoder(net_out, 25*np.ones(32), merge_repeated=False)
 
-    sequence_dist = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), input_labels))
+    accuracy = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), input_labels))
 
     global_step = tf.Variable(0, name='global_step', trainable=False)
 
-    starter_learning_rate = cfg.TRAIN.LEARNING_RATE
+    starter_learning_rate = config.cfg.TRAIN.LEARNING_RATE
     learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step,
-                                               cfg.TRAIN.LR_DECAY_STEPS, cfg.TRAIN.LR_DECAY_RATE,
-                                               staircase=cfg.TRAIN.LR_STAIRCASE)
+                                               config.cfg.TRAIN.LR_DECAY_STEPS, config.cfg.TRAIN.LR_DECAY_RATE,
+                                               staircase=True)
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
     with tf.control_dependencies(update_ops):
         optimizer = tf.train.AdadeltaOptimizer(learning_rate=learning_rate).minimize(loss=cost, global_step=global_step)
 
     # Set tf summary
-    os.makedirs(cfg.PATH.TBOARD_SAVE_DIR, exist_ok=True)
+    tboard_save_path = 'tboard/shadownet'
+    if not ops.exists(tboard_save_path):
+        os.makedirs(tboard_save_path)
     tf.summary.scalar(name='Cost', tensor=cost)
     tf.summary.scalar(name='Learning_Rate', tensor=learning_rate)
-    if decode:
-        tf.summary.scalar(name='Seq_Dist', tensor=sequence_dist)
+    tf.summary.scalar(name='Accuracy', tensor=accuracy)
     merge_summary_op = tf.summary.merge_all()
 
     # Set saver configuration
     saver = tf.train.Saver()
-    os.makedirs(cfg.PATH.TBOARD_SAVE_DIR, exist_ok=True)
+    model_save_dir = 'model/shadownet'
+    if not ops.exists(model_save_dir):
+        os.makedirs(model_save_dir)
     train_start_time = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
     model_name = 'shadownet_{:s}.ckpt'.format(str(train_start_time))
-    model_save_path = ops.join(cfg.PATH.MODEL_SAVE_DIR, model_name)
+    model_save_path = ops.join(model_save_dir, model_name)
 
     # Set sess configuration
     sess_config = tf.ConfigProto()
-    sess_config.gpu_options.per_process_gpu_memory_fraction = cfg.TRAIN.GPU_MEMORY_FRACTION
-    sess_config.gpu_options.allow_growth = cfg.TRAIN.TF_ALLOW_GROWTH
+    sess_config.gpu_options.per_process_gpu_memory_fraction = config.cfg.TRAIN.GPU_MEMORY_FRACTION
+    sess_config.gpu_options.allow_growth = config.cfg.TRAIN.TF_ALLOW_GROWTH
 
     sess = tf.Session(config=sess_config)
 
-    summary_writer = tf.summary.FileWriter(cfg.PATH.TBOARD_SAVE_DIR)
+    summary_writer = tf.summary.FileWriter(tboard_save_path)
     summary_writer.add_graph(sess.graph)
 
     # Set the training parameters
-    train_epochs = cfg.TRAIN.EPOCHS
+    train_epochs = config.cfg.TRAIN.EPOCHS
 
     with sess.as_default():
         if weights_path is None:
@@ -141,46 +114,33 @@ def train_shadownet(cfg: EasyDict, weights_path: str=None, decode: bool=False, n
             logger.info('Restore model from {:s}'.format(weights_path))
             saver.restore(sess=sess, save_path=weights_path)
 
-        patience_counter = 1
-        cost_history = [np.inf]
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
         for epoch in range(train_epochs):
-            if epoch > 1 and cfg.TRAIN.EARLY_STOPPING:
-                # We always compare to the first point where cost didn't improve
-                if cost_history[-1 - patience_counter] - cost_history[-1] > cfg.TRAIN.PATIENCE_DELTA:
-                    patience_counter = 1
-                else:
-                    patience_counter += 1
-                if patience_counter > cfg.TRAIN.PATIENCE_EPOCHS:
-                    logger.info("Cost didn't improve beyond {:f} for {:d} epochs, stopping early.".
-                                format(cfg.TRAIN.PATIENCE_DELTA, patience_counter))
-                    break
-            if decode:
-                _, c, seq_distance, predictions, labels, summary = sess.run(
-                    [optimizer, cost, sequence_dist, decoded, input_labels, merge_summary_op])
+            _, c, train_accuracy, summary = sess.run([optimizer, cost, accuracy, merge_summary_op])
 
-                labels = decoder.sparse_tensor_to_str(labels)
-                predictions = decoder.sparse_tensor_to_str(predictions[0])
-                accuracy = compute_accuracy(labels, predictions)
+            if epoch % config.cfg.TRAIN.DISPLAY_STEP == 0:
+                logger.info('Epoch: {:d} cost= {:9f} training accuracy= {:9f}'.format(
+                    epoch + 1, c, train_accuracy))
 
-                if epoch % cfg.TRAIN.DISPLAY_STEP == 0:
-                    logger.info('Epoch: {:d} cost= {:9f} seq distance= {:9f} train accuracy= {:9f}'.format(
-                        epoch + 1, c, seq_distance, accuracy))
-
-            else:
-                _, c, summary = sess.run([optimizer, cost, merge_summary_op])
-                if epoch % cfg.TRAIN.DISPLAY_STEP == 0:
-                    logger.info('Epoch: {:d} cost= {:9f}'.format(epoch + 1, c))
-
-            cost_history.append(c)
             summary_writer.add_summary(summary=summary, global_step=epoch)
             saver.save(sess=sess, save_path=model_save_path, global_step=epoch)
 
-        return np.array(cost_history[1:])  # Don't return the first np.inf
+        coord.request_stop()
+        coord.join(threads=threads)
+
+    sess.close()
+
+    return
 
 
 if __name__ == '__main__':
-    args, cfg = init_args()
+    # init args
+    args = init_args()
 
-    train_shadownet(cfg=cfg, weights_path=args.weights_path, decode=args.decode_outputs,
-                    num_threads=args.num_threads)
+    if not ops.exists(args.dataset_dir):
+        raise ValueError('{:s} doesn\'t exist'.format(args.dataset_dir))
+
+    train_shadownet(args.dataset_dir, args.weights_path)
     print('Done')

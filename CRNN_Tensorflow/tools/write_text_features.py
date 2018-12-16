@@ -11,102 +11,94 @@ Write text features into tensorflow records
 import os
 import os.path as ops
 import argparse
-from functools import reduce
 import numpy as np
+import cv2
+try:
+    from cv2 import cv2
+except ImportError:
+    pass
 
 from data_provider import data_provider
-from data_provider.data_provider import TextDataset
-from local_utils.config_utils import load_config
-from local_utils.data_utils import TextFeatureIO
-from local_utils.establish_char_dict import CharDictBuilder
+from local_utils import data_utils
 
 
-def init_args() -> argparse.Namespace:
-    """ Parses command line arguments
-
-    :return: Parsed arguments
+def init_args():
     """
-    parser = argparse.ArgumentParser(description='Writes text features from train and test data as tensorflow records')
-    parser.add_argument('-d', '--dataset_dir', type=str, required=True,
-                        help='Path to "Train" and "Test" folders with data')
-    parser.add_argument('-s', '--save_dir', type=str, required=True,
-                        help='Where to store the generated tfrecords')
-    parser.add_argument('-c', '--charset_dir', type=str, default=None,
-                        help='Path were character maps extracted from the labels in the dataset will be saved')
-    parser.add_argument('-f', '--config_file', type=str,
-                        help='Use this global configuration file')
-    parser.add_argument('-a', '--annotation_file', type=str, default='sample.txt',
-                        help='Name of annotations file (in dataset_dir/Train and dataset_dir/Test). '
-                             'The encoding is assumed to be utf-8')
-    parser.add_argument('-v', '--validation_split', type=float, default=0.15,
-                        help='Fraction of training data to use for validation. Set to 0 to disable.')
-    parser.add_argument('-n', '--normalization', type=str, default=None,
-                        help="Perform normalization on images. Can be either 'divide_255' or 'divide_256'")
+
+    :return:
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset_dir', type=str, help='Where you store the dataset')
+    parser.add_argument('--save_dir', type=str, help='Where you store tfrecords')
+
     return parser.parse_args()
 
 
-def write_tfrecords(dataset: TextDataset, name: str, save_dir: str, charset_dir: str=None):
+def write_features(dataset_dir, save_dir):
     """
 
-    :param dataset:
-    :param name: Name of the dataset (e.g. "train", "test", or "validation")
-    :param save_dir: Where to store the tf records
-    :param charset_dir: If not None, extract character maps from labels and merge with any char_dict already present
+    :param dataset_dir:
+    :param save_dir:
+    :return:
     """
-    tfrecord_path = ops.join(save_dir, '%s_feature.tfrecords' % name)
-    print('Writing tf records for %s at %s...' % (name, tfrecord_path))
+    if not ops.exists(save_dir):
+        os.makedirs(save_dir)
 
-    images = dataset.images
-    h, w, c = images.shape[1:]  # shape is num samples x height x width x num channels
-    images = [bytes(list(np.reshape(tmp, [w * h * c]))) for tmp in images]
-    labels = dataset.labels
-    imagenames = dataset.imagenames
+    print('Initialize the dataset provider ......')
+    provider = data_provider.TextDataProvider(dataset_dir=dataset_dir, annotation_name='sample.txt',
+                                              validation_set=True, validation_split=0.15, shuffle='every_epoch',
+                                              normalization=None)
+    print('Dataset provider intialize complete')
 
-    if dataset.num_examples < 1:
-        print("ERROR: No samples or labels or any found. Is your dataset ok?")
-        return
+    feature_io = data_utils.TextFeatureIO()
 
-    if charset_dir is not None:
-        os.makedirs(os.path.dirname(charset_dir), exist_ok=True)
-        # FIXME: rereading every time is a bit silly...
-        try:
-            d = CharDictBuilder.read_char_dict(os.path.join(charset_dir, "char_dict.json"))
-            all_chars = set(map(lambda k: chr(int(k)), d.keys()))
-        except FileNotFoundError:
-            all_chars = set()
-        all_chars = all_chars.union(reduce(lambda a, b: set(a).union(set(b)), labels))
-        CharDictBuilder.write_char_dict(all_chars, os.path.join(charset_dir, "char_dict.json"))
-        CharDictBuilder.map_ord_to_index(all_chars, os.path.join(charset_dir, "ord_map.json"))
-        print("  (character maps written)")
+    # write train tfrecords
+    print('Start writing training tf records')
 
-        char_dict_path=os.path.join(charset_dir, "char_dict.json")
-        ord_map_dict_path=os.path.join(charset_dir, "ord_map.json")
-    else:
-        char_dict_path = os.path.join("data/char_dict", "char_dict.json")
-        ord_map_dict_path = os.path.join("data/char_dict", "ord_map.json")
+    train_images = provider.train.images
+    train_images = [cv2.resize(tmp, (100, 32)) for tmp in train_images]
+    train_images = [bytes(list(np.reshape(tmp, [100 * 32 * 3]))) for tmp in train_images]
+    train_labels = provider.train.labels
+    train_imagenames = provider.train.imagenames
 
-    feature_io = TextFeatureIO(char_dict_path, ord_map_dict_path)
-    feature_io.writer.write_features(tfrecords_path=tfrecord_path, labels=labels, images=images,
-                                     imagenames=imagenames)
+    train_tfrecord_path = ops.join(save_dir, 'train_feature.tfrecords')
+    feature_io.writer.write_features(tfrecords_path=train_tfrecord_path, labels=train_labels, images=train_images,
+                                     imagenames=train_imagenames)
+
+    # write test tfrecords
+    print('Start writing testing tf records')
+
+    test_images = provider.test.images
+    test_images = [cv2.resize(tmp, (100, 32)) for tmp in test_images]
+    test_images = [bytes(list(np.reshape(tmp, [100 * 32 * 3]))) for tmp in test_images]
+    test_labels = provider.test.labels
+    test_imagenames = provider.test.imagenames
+
+    test_tfrecord_path = ops.join(save_dir, 'test_feature.tfrecords')
+    feature_io.writer.write_features(tfrecords_path=test_tfrecord_path, labels=test_labels, images=test_images,
+                                     imagenames=test_imagenames)
+
+    # write val tfrecords
+    print('Start writing validation tf records')
+
+    val_images = provider.validation.images
+    val_images = [cv2.resize(tmp, (100, 32)) for tmp in val_images]
+    val_images = [bytes(list(np.reshape(tmp, [100 * 32 * 3]))) for tmp in val_images]
+    val_labels = provider.validation.labels
+    val_imagenames = provider.validation.imagenames
+
+    val_tfrecord_path = ops.join(save_dir, 'validation_feature.tfrecords')
+    feature_io.writer.write_features(tfrecords_path=val_tfrecord_path, labels=val_labels, images=val_images,
+                                     imagenames=val_imagenames)
+
+    return
 
 
 if __name__ == '__main__':
+    # init args
     args = init_args()
-
-    config = load_config(args.config_file)
-
     if not ops.exists(args.dataset_dir):
         raise ValueError('Dataset {:s} doesn\'t exist'.format(args.dataset_dir))
 
-    os.makedirs(args.save_dir, exist_ok=True)
-
-    print('Initializing the dataset provider...')
-
-    provider = data_provider.TextDataProvider(dataset_dir=args.dataset_dir, annotation_name=args.annotation_file,
-                                              validation_set=args.validation_split > 0,
-                                              validation_split=args.validation_split, shuffle='every_epoch',
-                                              normalization=args.normalization, input_size=config.cfg.ARCH.INPUT_SIZE)
-
-    write_tfrecords(provider.train, "train", args.save_dir, args.charset_dir)
-    write_tfrecords(provider.test, "test", args.save_dir, args.charset_dir)
-    write_tfrecords(provider.validation, "val", args.save_dir, args.charset_dir)
+    # write tf records
+    write_features(dataset_dir=args.dataset_dir, save_dir=args.save_dir)

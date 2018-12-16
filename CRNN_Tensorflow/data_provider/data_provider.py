@@ -9,8 +9,6 @@
 Provide the training and testing data for shadow net
 """
 import os.path as ops
-from typing import Tuple, Union
-
 import numpy as np
 import copy
 import cv2
@@ -133,27 +131,25 @@ class TextDataProvider(object):
     """
         Implement the text data provider for training and testing the shadow net
     """
-    def __init__(self, dataset_dir, annotation_name, input_size: Tuple[int, int],
-                 validation_set=None, validation_split=None, shuffle=None, normalization=None):
+    def __init__(self, dataset_dir, annotation_name, validation_set=None, validation_split=None, shuffle=None,
+                 normalization=None):
         """
 
-        :param dataset_dir: Directory with all data.
-        :param annotation_name: Annotations file name
-        :param input_size: Target size (width, height) to which all images will be resized.
-        :param validation_set: See `validation_split`
-        :param validation_split: `float` or None. If a float, ratio of training data which will will be used as
-                                 validation data. If None and if 'validation set' == True, the validation set will be a
-                                  copy of the test set.
-        :param shuffle: Set to 'once_prior_train' to shuffle the data once before training, 'every_epoch' to shuffle
-                        every epoch. None to disable shuffling
+        :param dataset_dir: str, where you save the dataset one class on folder
+        :param annotation_name: annotation name
+        :param validation_set:
+        :param validation_split: `float` or None float: chunk of `train set` will be marked as `validation set`.
+                                 None: if 'validation set' == True, `validation set` will be
+                                 copy of `test set`
+        :param shuffle: if need shuffle the dataset, 'once_prior_train' represent shuffle only once before training
+                        'every_epoch' represent shuffle the data every epoch
         :param normalization: if need do normalization to the dataset,
                               'None': no any normalization
                               'divide_255': divide all pixels by 255
                               'divide_256': divide all pixels by 256
-                              'by_chanels': subtract the mean and divide by the standard deviation in each channel
+                              'by_chanels': substract mean of every chanel and divide each
+                                            chanel data by it's standart deviation
         """
-        self.__input_size = input_size
-        self.__seq_length = int(input_size[0] / 4)
         self.__dataset_dir = dataset_dir
         self.__validation_split = validation_split
         self.__shuffle = shuffle
@@ -165,97 +161,48 @@ class TextDataProvider(object):
         assert ops.exists(self.__train_dataset_dir)
         assert ops.exists(self.__test_dataset_dir)
 
-        def make_datasets(dir: str, split: float=None) -> Tuple[TextDataset, Union[TextDataset, None]]:
-            """ Helper function to split data and create TextDatasets
-            TODO: maybe shuffle before splitting?
-             :param dir: Directory with all data
-             :param split: take this fraction of the data for the second TextDataset
-            """
-            annotation_path = ops.join(dir, annotation_name)
-            assert ops.exists(annotation_path)
+        # add test dataset
+        test_anno_path = ops.join(self.__test_dataset_dir, annotation_name)
+        assert ops.exists(test_anno_path)
 
-            with open(annotation_path, 'r', encoding='utf-8') as fd:
-                print("Reading labels in {}... ".format(annotation_path), end='', flush=True)
-                info = np.array(list(filter(lambda x: len(x) == 2,  # discard bogus entries with no label
-                                            (line.strip().split(maxsplit=1) for line in fd.readlines()))))
-                print("Done.")
-                print("Reading and scaling images... ", end='', flush=True)
-                images = []
-                for name in info[:, 0]:
-                    img = cv2.imread(ops.join(dir, name), cv2.IMREAD_COLOR)
-                    if img is None:
-                        raise Exception("Error reading '{}'. Check for whitespace in file names or invalid files".
-                                        format(name))
-                    images.append(cv2.resize(img, tuple(self.__input_size)))
-                images = np.array(images)
-                print("Done.")
-                print("Checking label lengths... ", end='', flush=True)
-                max_label_len = max(map(len, info[:, 1]))
-                if max_label_len > self.__seq_length:
-                    print("WARNING: Some labels are longer ({:d} chars) than the maximum sequence length {:d}".format(
-                        max_label_len, self.__seq_length))
-                print("Done.")
-                print("Generating arrays... ", end='', flush=True)
-                labels = np.array([x[:self.__seq_length] for x in info[:, 1]])
-                image_names = np.array([ops.basename(name) for name in info[:, 0]])
-                print("Done.")
+        with open(test_anno_path, 'r') as anno_file:
+            info = np.array([tmp.strip().split() for tmp in anno_file.readlines()])
+        test_images = np.array([cv2.imread(ops.join(self.__test_dataset_dir, tmp), cv2.IMREAD_COLOR)
+                               for tmp in info[:, 0]])
+        test_labels = np.array([tmp for tmp in info[:, 1]])
 
-            if split is None:
-                return TextDataset(images, labels, image_names, shuffle=shuffle, normalization=normalization), None
-            else:
-                split_idx = int(images.shape[0] * (1.0 - split))
-                return TextDataset(images[:split_idx], labels[:split_idx], image_names[:split_idx],
-                                   shuffle=shuffle, normalization=normalization), \
-                       TextDataset(images[split_idx:], labels[split_idx:], image_names[split_idx:],
-                                   shuffle=shuffle, normalization=normalization)
+        test_imagenames = np.array([ops.basename(tmp) for tmp in info[:, 0]])
 
-        self.test, _ = make_datasets(self.__test_dataset_dir)
+        self.test = TextDataset(test_images, test_labels, imagenames=test_imagenames,
+                                shuffle=shuffle, normalization=normalization)
 
-        if validation_set is None:
-            self.train, _ = make_datasets(self.__train_dataset_dir)
+        # add train and validation dataset
+        train_anno_path = ops.join(self.__train_dataset_dir, annotation_name)
+        assert ops.exists(train_anno_path)
+
+        with open(train_anno_path, 'r') as anno_file:
+            info = np.array([tmp.strip().split() for tmp in anno_file.readlines()])
+        train_images = np.array([cv2.imread(ops.join(self.__train_dataset_dir, tmp), cv2.IMREAD_COLOR)
+                                for tmp in info[:, 0]])
+        train_labels = np.array([tmp for tmp in info[:, 1]])
+        train_imagenames = np.array([ops.basename(tmp) for tmp in info[:, 0]])
+
+        if validation_set is not None and validation_split is not None:
+            split_idx = int(train_images.shape[0] * (1 - validation_split))
+            self.train = TextDataset(images=train_images[:split_idx], labels=train_labels[:split_idx], shuffle=shuffle,
+                                     normalization=normalization, imagenames=train_imagenames[:split_idx])
+            self.validation = TextDataset(images=train_images[split_idx:], labels=train_labels[split_idx:],
+                                          shuffle=shuffle, normalization=normalization,
+                                          imagenames=train_imagenames[split_idx:])
         else:
-            if validation_split is None:
-                self.validation = self.test
-            elif isinstance(validation_split, float) and (0.0 <= validation_split <= 1.0):
-                if validation_split > 0.5:
-                    print("validation_split suspiciously high: %.2f" % validation_split)
-                self.train, self.validation = make_datasets(self.__train_dataset_dir, validation_split)
-            else:
-                raise ValueError("Expected validation_split to be a float between 0 and 1.")
+            self.train = TextDataset(images=train_images, labels=train_labels, shuffle=shuffle,
+                                     normalization=normalization, imagenames=train_imagenames)
+
+        if validation_set and not validation_split:
+            self.validation = self.test
+        return
 
     def __str__(self):
-        provider_info = 'Dataset_dir {:s} contains {:d} training, {:d} validation and {:d} testing images'.\
+        provider_info = 'Dataset_dir: {:s} contain training images: {:d} validation images: {:d} testing images: {:d}'.\
             format(self.__dataset_dir, self.train.num_examples, self.validation.num_examples, self.test.num_examples)
         return provider_info
-
-    @property
-    def input_size(self):
-        """ Size to which images are rescaled before training and testing.
-
-        :return:
-        """
-        return self.__input_size
-
-    @property
-    def dataset_dir(self):
-        """
-
-        :return:
-        """
-        return self.__dataset_dir
-
-    @property
-    def train_dataset_dir(self):
-        """
-
-        :return:
-        """
-        return self.__train_dataset_dir
-
-    @property
-    def test_dataset_dir(self):
-        """
-
-        :return:
-        """
-        return self.__test_dataset_dir

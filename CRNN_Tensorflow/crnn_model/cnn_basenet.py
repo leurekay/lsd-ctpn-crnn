@@ -299,7 +299,7 @@ class CNNBaseModel(metaclass=ABCMeta):
         :param is_training:
         :return:
         """
-        output = tf.layers.batch_normalization(inputdata, scale=True, training=is_training)
+        output = tf.contrib.layers.batch_norm(inputdata, scale=True, is_training=is_training, updates_collections=None)
         return output
 
     @staticmethod

@@ -8,36 +8,28 @@
 """
 Implement some utils used to convert image and it's corresponding label into tfrecords
 """
-from typing import List, Tuple
-
 import numpy as np
 import tensorflow as tf
 import os
 import os.path as ops
 import sys
 
-from easydict import EasyDict
-
-from local_utils import establish_char_dict
-
 
 class FeatureIO(object):
     """
         Implement the base writer class
     """
-
-    def __init__(self, char_dict_path, ord_map_dict_path):
-        self.__char_dict = establish_char_dict.CharDictBuilder.read_char_dict(char_dict_path)
-        self.__ord_map = establish_char_dict.CharDictBuilder.read_ord_map_dict(ord_map_dict_path)
-        return
+    def __init__(self):
+        self.__char_list = '0123456789abcdefghijklmnopqrstuvwxyz '
+        pass
 
     @property
-    def char_dict(self):
+    def char_list(self):
         """
 
         :return:
         """
-        return self.__char_dict
+        return self.__char_list
 
     @staticmethod
     def int64_feature(value):
@@ -87,80 +79,87 @@ class FeatureIO(object):
             value = [value]
         return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
 
-    def char_to_int(self, char: str) -> int:
+    @staticmethod
+    def char_to_int(char):
         """
 
         :param char:
         :return:
         """
         temp = ord(char)
-        for k, v in self.__ord_map.items():
-            if v == str(temp):
-                temp = int(k)
-                return temp
-        raise KeyError("Character {} missing in ord_map.json".format(char))
-
-        # TODO
-        # Here implement a double way dict or two dict to quickly map ord and it's corresponding index
-
-    def int_to_char(self, number: int) -> str:
-        """ Return the character corresponding to the given integer.
-
-        :param number: Can be passed as string representing the integer value to look up.
-        :return: Character corresponding to 'number' in the char_dict
-        """
-        # 1 is the default value in sparse_tensor_to_str() This will be skipped when building the resulting strings
-        if number == 1 or number == '1':
-            return '\x00'
+        if 97 <= temp <= 122:
+            temp = temp - 97 + 10
         else:
-            return self.__char_dict[str(number)]
+            if 65 <= temp <= 90:
+                temp -= 55
+            else:
+                if 48 <= temp <= 57:
+                    temp -= 48
+                else:
+                    temp = 36
+        return temp
 
-    def encode_labels(self, labels) -> Tuple[List[List[int]], List[int]]:
+    def int_to_char(self, number):
         """
-            encode the labels for ctc loss
+
+        :param number:
+        :return:
+        """
+        return self.__char_list[number]
+
+    def encode_labels(self, labels):
+        """
+        encode the labels for ctc loss
         :param labels:
         :return:
         """
-        encoded_labels = []
+        encord_labeles = []
         lengths = []
         for label in labels:
-            encode_label = [self.char_to_int(char) for char in label]
-            encoded_labels.append(encode_label)
+            encord_labele = [self.char_to_int(char) for char in label]
+            encord_labeles.append(encord_labele)
             lengths.append(len(label))
-        return encoded_labels, lengths
+        return encord_labeles, lengths
 
-    def sparse_tensor_to_str(self, sparse_tensor: tf.SparseTensor) -> List[str]:
+    def encode_label(self, label):
         """
-        :param sparse_tensor: prediction or ground truth label
-        :return: String value of the sparse tensor
+        :param label:
+        :return:
         """
-        indices = sparse_tensor.indices
-        values = sparse_tensor.values
-        # Translate from consecutive numbering into ord() values
-        values = np.array([self.__ord_map[str(tmp)] for tmp in values])
-        dense_shape = sparse_tensor.dense_shape
+        encord_label = [self.char_to_int(char) for char in label]
+        length = len(label)
+        return encord_label, length
+
+    def sparse_tensor_to_str(self, spares_tensor: tf.SparseTensor):
+        """
+        :param spares_tensor:
+        :return: a str
+        """
+        indices = spares_tensor.indices
+        values = spares_tensor.values
+        dense_shape = spares_tensor.dense_shape
 
         number_lists = np.ones(dense_shape, dtype=values.dtype)
         str_lists = []
         res = []
+        str_tmp = ''
         for i, index in enumerate(indices):
             number_lists[index[0], index[1]] = values[i]
         for number_list in number_lists:
-            # Translate from ord() values into characters
             str_lists.append([self.int_to_char(val) for val in number_list])
         for str_list in str_lists:
-            # int_to_char() returns '\x00' for an input == 1, which is the default
-            # value in number_lists, so we skip it when building the result
-            res.append(''.join(c for c in str_list if c != '\x00'))
-        return res
+            res.append(''.join(c for c in str_list if c != '1'))
+        for str_list in str_lists:
+            str_tmp += ''.join(str_list)
+        return str_tmp, res
 
 
 class TextFeatureWriter(FeatureIO):
     """
         Implement the crnn feature writer
     """
-    def __init__(self, char_dict_path, ord_map_dict_path):
-        super(TextFeatureWriter, self).__init__(char_dict_path, ord_map_dict_path)
+    def __init__(self):
+        super(TextFeatureWriter, self).__init__()
         return
 
     def write_features(self, tfrecords_path, labels, images, imagenames):
@@ -199,50 +198,32 @@ class TextFeatureReader(FeatureIO):
     """
         Implement the crnn feature reader
     """
-    def __init__(self, char_dict_path, ord_map_dict_path):
-        super(TextFeatureReader, self).__init__(char_dict_path, ord_map_dict_path)
+    def __init__(self):
+        super(TextFeatureReader, self).__init__()
         return
 
     @staticmethod
-    def read_features(cfg: EasyDict, batch_size: int, num_threads: int, isTrain: bool=True) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    def read_features(tfrecords_path, num_epochs):
         """
 
-        :param cfg:
-        :param batch_size:
-        :param num_threads:
-        :return: input_images, input_labels, input_image_names
+        :param tfrecords_path:
+        :param num_epochs:
+        :return:
         """
-        if isTrain:
-            tfrecords_path = os.path.join(cfg.PATH.TFRECORDS_DIR, "train_feature.tfrecords")
-            assert ops.exists(tfrecords_path), "tfrecords file not found: %s" % tfrecords_path
-        else:
-            tfrecords_path = os.path.join(cfg.PATH.TFRECORDS_DIR, "test_feature.tfrecords")
-            assert ops.exists(tfrecords_path), "tfrecords file not found: %s" % tfrecords_path            
-        
-        def extract_batch(x):
-            return TextFeatureReader.extract_features_batch(x, cfg.ARCH.INPUT_SIZE, cfg.ARCH.INPUT_CHANNELS)
+        assert ops.exists(tfrecords_path)
 
-        dataset = tf.data.TFRecordDataset(tfrecords_path)
-        dataset = dataset.batch(cfg.TRAIN.BATCH_SIZE, drop_remainder=True)
-        dataset = dataset.map(extract_batch, num_parallel_calls=num_threads)
-        dataset = dataset.apply(tf.contrib.data.shuffle_and_repeat(batch_size * num_threads))
-        dataset = dataset.prefetch(buffer_size=batch_size * num_threads)
-        iterator = dataset.make_one_shot_iterator()
-        input_images, input_labels, input_image_names = iterator.get_next()
-        return input_images, input_labels, input_image_names
+        filename_queue = tf.train.string_input_producer([tfrecords_path], num_epochs=num_epochs)
+        reader = tf.TFRecordReader()
+        _, serialized_example = reader.read(filename_queue)
 
-    @staticmethod
-    def extract_features_batch(serialized_batch, input_size: Tuple[int, int], input_channels: int) \
-            -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        features = tf.parse_example(serialized_batch,
-                                    features={'images': tf.FixedLenFeature((), tf.string),
-                                              'imagenames': tf.FixedLenFeature([1], tf.string),
-                                              'labels': tf.VarLenFeature(tf.int64), })
-        bs = features['images'].shape[0]
-        images = tf.decode_raw(features['images'], tf.uint8)
-        w, h = input_size
-        images = tf.cast(x=images, dtype=tf.float32)
-        images = tf.reshape(images, [bs, h, w, input_channels])
+        features = tf.parse_single_example(serialized_example,
+                                           features={
+                                               'images': tf.FixedLenFeature((), tf.string),
+                                               'imagenames': tf.FixedLenFeature([1], tf.string),
+                                               'labels': tf.VarLenFeature(tf.int64),
+                                           })
+        image = tf.decode_raw(features['images'], tf.uint8)
+        images = tf.reshape(image, [32, 100, 3])
         labels = features['labels']
         labels = tf.cast(labels, tf.int32)
         imagenames = features['imagenames']
@@ -251,13 +232,14 @@ class TextFeatureReader(FeatureIO):
 
 class TextFeatureIO(object):
     """
-        Implement a crnn feature io manager
+        Implement a crnn feture io manager
     """
-    def __init__(self, char_dict_path, ord_map_dict_path):
+    def __init__(self):
         """
+
         """
-        self.__writer = TextFeatureWriter(char_dict_path, ord_map_dict_path)
-        self.__reader = TextFeatureReader(char_dict_path, ord_map_dict_path)
+        self.__writer = TextFeatureWriter()
+        self.__reader = TextFeatureReader()
         return
 
     @property

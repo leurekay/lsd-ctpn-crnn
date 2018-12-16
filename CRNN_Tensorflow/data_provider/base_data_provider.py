@@ -24,7 +24,6 @@ class Dataset(object):
 
         :param images:
         :param labels:
-        :param imagenames:
         :return:
         """
         images = np.array(images)
@@ -78,7 +77,7 @@ class Dataset(object):
         :return:
         """
         new_image = np.zeros(image.shape)
-        for chanel in range(image.shape[2]):
+        for chanel in range(3):
             mean = np.mean(image[:, :, chanel])
             std = np.std(image[:, :, chanel])
             new_image[:, :, chanel] = (image[:, :, chanel] - mean) / std

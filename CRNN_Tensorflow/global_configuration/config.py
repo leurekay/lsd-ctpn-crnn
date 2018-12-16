@@ -15,31 +15,11 @@ __C = edict()
 
 cfg = __C
 
-__C.ARCH = edict()
-
-# Number of units in each LSTM cell
-__C.ARCH.HIDDEN_UNITS = 256
-# Number of stacked LSTM cells
-__C.ARCH.HIDDEN_LAYERS = 2
-# Sequence length.  This has to be the width of the final feature map of the CNN, which is input size width / 4
-__C.ARCH.SEQ_LENGTH = 25
-# Width x height into which training / testing images are resized before feeding into the network
-__C.ARCH.INPUT_SIZE = (100, 32)
-# Number of channels in images
-__C.ARCH.INPUT_CHANNELS = 3
-
 # Train options
 __C.TRAIN = edict()
 
-# Use early stopping?
-__C.TRAIN.EARLY_STOPPING = True
-# Wait at least this many epochs without improvement in the cost function
-__C.TRAIN.PATIENCE_EPOCHS = 6
-# Expect at least this improvement in one epoch in order to reset the early stopping counter
-__C.TRAIN.PATIENCE_DELTA = 1e-3
-
 # Set the shadownet training epochs
-__C.TRAIN.EPOCHS = 40000
+__C.TRAIN.EPOCHS = 50000
 # Set the display step
 __C.TRAIN.DISPLAY_STEP = 1
 # Set the test display step during training process
@@ -53,15 +33,36 @@ __C.TRAIN.GPU_MEMORY_FRACTION = 0.85
 # Set the GPU allow growth parameter during tensorflow training process
 __C.TRAIN.TF_ALLOW_GROWTH = True
 # Set the shadownet training batch size
-__C.TRAIN.BATCH_SIZE = 32
+__C.TRAIN.BATCH_SIZE = 64
 # Set the shadownet validation batch size
-__C.TRAIN.VAL_BATCH_SIZE = 32
+__C.TRAIN.VAL_BATCH_SIZE = 64
 # Set the learning rate decay steps
 __C.TRAIN.LR_DECAY_STEPS = 10000
 # Set the learning rate decay rate
-__C.TRAIN.LR_DECAY_RATE = 0.1
-# Update learning rate in jumps?
-__C.TRAIN.LR_STAIRCASE = False
+__C.TRAIN.LR_DECAY_RATE = 0.96
+# Set the L2 regularization decay rate
+__C.TRAIN.L2_DECAY_RATE = 0.00001
+# Set the horizon flip data augmentation method
+__C.TRAIN.USE_HORIZON_FLIP = True
+# Set the vertical flip data augmentation method
+__C.TRAIN.USE_VERTICAL_FLIP = False
+# Set the random crop data augmentation method
+__C.TRAIN.USE_RANDOM_CROP = False
+__C.TRAIN.RANDOM_CROP_VALUE = [300, 300, 3]
+# Set the random brightness data augmentation method
+__C.TRAIN.USE_RANDOM_BRIGHTNESS = False
+__C.TRAIN.RANDOM_BRIGHTNESS_VALUE = 100  # you can check the preprocess.py scripts to learn the way how it's implemented
+# Set the random contrast data augmentation method
+__C.TRAIN.USE_RANDOM_CONTRAST = False
+__C.TRAIN.RANDOM_CONTRAST_LOWER_VALUE = 0.4
+__C.TRAIN.RANDOM_CONTRAST_HIGHER_VALUE = 0.6
+# Set the std normalization data augmentation method
+__C.TRAIN.USE_STD_NORMALIZATION = False
+# Set the min max normalization data augmentation method
+__C.TRAIN.USE_MINMAX_NORMALIZATION = False
+# Set the central normalization data augmentation method
+__C.TRAIN.USE_CENTRAL_NORMALIZATION = False
+__C.TRAIN.CENTRAL_NORMALIZATION_VALUE = [103.939, 116.779, 123.68]
 
 # Test options
 __C.TEST = edict()
@@ -73,14 +74,5 @@ __C.TEST.TF_ALLOW_GROWTH = False
 # Set the test batch size
 __C.TEST.BATCH_SIZE = 32
 
-# Path config
-__C.PATH = edict()
-
-# Path to save the model checkpoints
-__C.PATH.MODEL_SAVE_DIR = 'model/shadownet'
-# Path to save log for tensorboard
-__C.PATH.TBOARD_SAVE_DIR = 'tboard/shadownet'
-# Path to character dictionaries
-__C.PATH.CHAR_DICT_DIR = 'data/char_dict'
-# Path to tfrecords
-__C.PATH.TFRECORDS_DIR = 'data'
+# Set the invokernet output dims
+__C.TRAIN.OUT_DIMS = 10
